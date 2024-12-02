@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Hand Gesture Physics Playground</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@3.9.4/dist/full.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.1/anime.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #ffffff;
+            margin: 0;
+            overflow: hidden;
+        }
+        #video {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror video */
+            z-index: 1;
+            opacity: 0.7; /* Make video slightly transparent */
+        }
+        #output {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            transform: scaleX(-1); /* Mirror canvas to match video */
+        }
+        .movable-object {
+            position: absolute;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.1s ease-out;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            user-select: none;
+            z-index: 3;
+            box-shadow: 0 0 15px rgba(0,0,0,0.3);
+        }
+        .gesture-indicator {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 12px;
+            z-index: 1000;
+            font-size: 18px;
+            color: #fff;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        .pinch-indicator {
+            width: 20px;
+            height: 20px;
+            background: #ff3366;
+            border-radius: 50%;
+            position: fixed;
+            pointer-events: none;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.2s;
+            box-shadow: 0 0 10px rgba(255,51,102,0.5);
+            transform: translate(-50%, -50%) scaleX(-1);
+        }
+        #loading {
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 0 25px rgba(0,0,0,0.5);
+        }
+        .title-container {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            text-align: center;
+            pointer-events: none;
+        }
+        .animated-title {
+            font-size: 2.5rem;
+            font-weight: bold;
+            background: linear-gradient(
+                300deg,
+                #ff3366,
+                #ff6b6b,
+                #4ecdc4,
+                #45b7d1,
+                #96c93d,
+                #ff3366
+            );
+            background-size: 300% 300%;
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            animation: gradient 10s ease infinite;
+            text-shadow: 0 0 20px rgba(0,0,0,0.3);
+            font-family: 'Arial', sans-serif;
+            letter-spacing: 2px;
+        }
+        @keyframes gradient {
+            0% {
+                background-position: 0% 50%;
+            }
+            50% {
+                background-position: 100% 50%;
+            }
+            100% {
+                background-position: 0% 50%;
+            }
+        }
+        .title-glow {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(
+                circle at center,
+                rgba(255,255,255,0.1) 0%,
+                rgba(255,255,255,0) 70%
+            );
+            filter: blur(8px);
+            pointer-events: none;
+            animation: glow 3s ease-in-out infinite alternate;
+        }
+        @keyframes glow {
+            from {
+                opacity: 0.5;
+                transform: scale(0.95);
+            }
+            to {
+                opacity: 0.8;
+                transform: scale(1.05);
+            }
+        }
+        .physics-object {
+            position: absolute;
+            border-radius: 8px;
+            pointer-events: none;
+            user-select: none;
+            z-index: 3;
+            box-shadow: 0 0 15px rgba(0,0,0,0.3);
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+    <div class="title-container">
+        <div class="title-glow"></div>
+        <a href="https://aibuilders.club" target="_blank" class="animated-title" style="text-decoration: none;">aibuilders.club</a>
+    </div>
+
+    <div id="loading" class="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50">
+        <div class="loading loading-spinner loading-lg text-primary"></div>
+        <p class="mt-2 text-primary text-xl">Initializing Gesture Tracking...</p>
+    </div>
+
+    <div class="gesture-indicator">
+        <p id="gestureText" class="text-lg font-semibold">Waiting for camera...</p>
+    </div>
+
+    <div class="pinch-indicator" id="pinchIndicator"></div>
+
+    <video id="video" playsinline autoplay></video>
+    <canvas id="output"></canvas>
+
+    <script>
+        // Physics Engine Variables
+        const Engine = Matter.Engine,
+              Render = Matter.Render,
+              World = Matter.World,
+              Bodies = Matter.Bodies,
+              Body = Matter.Body,
+              Constraint = Matter.Constraint;
+
+        let engine = Engine.create({
+            enableSleeping: true,
+            gravity: { x: 0, y: 1, scale: 0.0012 } // Adjusted for more natural gravity
+        });
+        
+        let physicsObjects = new Map(); // Map to store physics bodies
+        let constraints = new Map(); // Map to store hand constraints
+
+        // Constants and Variables
+        const OBJECTS_COUNT = 10;
+        const LETTERS = ['A', 'I', 'B', 'U', 'I', 'L', 'D', 'E', 'R', 'S'];
+        const PINCH_THRESHOLD = 0.06;
+        const GESTURE_SMOOTHING = 0.2;
+        const PHYSICS_SCALE = 100; // Scaling factor for physics world
+
+        // DOM Elements
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('output');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        const loading = document.getElementById('loading');
+        const gestureText = document.getElementById('gestureText');
+        const pinchIndicator = document.getElementById('pinchIndicator');
+
+        let isTracking = false;
+        let camera = null;
+        let hands = null;
+        let movableObjects = [];
+        let selectedObjects = new Map(); // Track objects selected by each hand
+        let lastPinchDistances = new Map(); // Track pinch distances for each hand
+        let isPinching = new Map(); // Track pinching state for each hand
+
+        // Initialize canvas and create objects
+        function initializeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            video.width = window.innerWidth;
+            video.height = window.innerHeight;
+
+            initializePhysicsWorld();
+
+            // Create physics-enabled objects with 10 distinct colors
+            const colors = [
+                '#FF3366', // Red-Pink
+                '#33FF88', // Green
+                '#3366FF', // Blue
+                '#FFCC33', // Yellow
+                '#FF33CC', // Pink
+                '#33CCFF', // Light Blue
+                '#FF6633', // Orange
+                '#66FF33', // Lime
+                '#CC33FF', // Purple
+                '#33FFCC'  // Turquoise
+            ];
+            
+            for (let i = 0; i < OBJECTS_COUNT; i++) {
+                createPhysicsObject(colors[i], i);
+            }
+        }
+
+        // Gesture detection functions
+        function getPinchDistance(landmarks) {
+            const thumb = landmarks[4];
+            const index = landmarks[8];
+            return Math.hypot(
+                (thumb.x - index.x) * canvas.width,
+                (thumb.y - index.y) * canvas.height
+            );
+        }
+
+        function detectGestures(allHandLandmarks) {
+            allHandLandmarks.forEach((landmarks, handIndex) => {
+                const pinchDistance = getPinchDistance(landmarks);
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+                
+                const pinchMidpoint = {
+                    x: ((1 - ((thumbTip.x + indexTip.x) / 2)) * canvas.width),
+                    y: ((thumbTip.y + indexTip.y) / 2) * canvas.height
+                };
+
+                // Handle pinch indicator
+                let handPinchIndicator = document.getElementById(`pinchIndicator_${handIndex}`);
+                if (!handPinchIndicator) {
+                    handPinchIndicator = pinchIndicator.cloneNode();
+                    handPinchIndicator.id = `pinchIndicator_${handIndex}`;
+                    document.body.appendChild(handPinchIndicator);
+                }
+                handPinchIndicator.style.left = `${pinchMidpoint.x}px`;
+                handPinchIndicator.style.top = `${pinchMidpoint.y}px`;
+
+                if (pinchDistance < PINCH_THRESHOLD * canvas.width) {
+                    handPinchIndicator.style.opacity = '1';
+                    
+                    if (!constraints.has(handIndex)) {
+                        // Find closest physics object
+                        let closestBody = null;
+                        let minDistance = Infinity;
+                        
+                        physicsObjects.forEach((element, body) => {
+                            if ([...constraints.values()].some(c => c.bodyB === body)) return;
+                            
+                            const distance = Matter.Vector.magnitude(Matter.Vector.sub(
+                                body.position,
+                                { x: pinchMidpoint.x, y: pinchMidpoint.y }
+                            ));
+                            
+                            if (distance < minDistance && distance < 100) {
+                                minDistance = distance;
+                                closestBody = body;
+                            }
+                        });
+
+                        if (closestBody) {
+                            // Create spring constraint with more natural feel
+                            const constraint = Constraint.create({
+                                pointA: { x: pinchMidpoint.x, y: pinchMidpoint.y },
+                                bodyB: closestBody,
+                                stiffness: 0.2,      // Firmer grip
+                                damping: 0.3,        // Natural damping
+                                length: 0,
+                                angularStiffness: 0.1, // Better rotation control
+                                render: {
+                                    visible: true
+                                }
+                            });
+                            
+                            // More natural stabilization when grabbing
+                            Body.setAngularVelocity(closestBody, closestBody.angularVelocity * 0.8);
+                            
+                            World.add(engine.world, constraint);
+                            constraints.set(handIndex, constraint);
+                            gestureText.textContent = `✨ Grabbed Block with Hand ${handIndex + 1}`;
+                        }
+                    } else {
+                        // Update constraint anchor point
+                        const constraint = constraints.get(handIndex);
+                        constraint.pointA = { x: pinchMidpoint.x, y: pinchMidpoint.y };
+                    }
+                } else {
+                    handPinchIndicator.style.opacity = '0';
+                    // Release constraint if exists
+                    if (constraints.has(handIndex)) {
+                        World.remove(engine.world, constraints.get(handIndex));
+                        constraints.delete(handIndex);
+                        gestureText.textContent = 'Ready for gestures';
+                    }
+                }
+            });
+        }
+
+        function onResults(results) {
+            if (!isTracking) return;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                detectGestures(results.multiHandLandmarks);
+
+                // Draw hand landmarks with corrected coordinates
+                results.multiHandLandmarks.forEach((landmarks, index) => {
+                    // Draw connections
+                    const connections = HAND_CONNECTIONS;
+                    for (const connection of connections) {
+                        const [i, j] = connection;
+                        ctx.beginPath();
+                        ctx.moveTo(
+                            landmarks[i].x * canvas.width,
+                            landmarks[i].y * canvas.height
+                        );
+                        ctx.lineTo(
+                            landmarks[j].x * canvas.width,
+                            landmarks[j].y * canvas.height
+                        );
+                        ctx.strokeStyle = index === 0 ? '#00ff88' : '#ff3366'; // Different colors for each hand
+                        ctx.lineWidth = 3;
+                        ctx.stroke();
+                    }
+
+                    // Draw landmarks
+                    landmarks.forEach((landmark, landmarkIndex) => {
+                        const isSpecialPoint = [0, 4, 8, 12, 16, 20].includes(landmarkIndex);
+                        ctx.beginPath();
+                        ctx.arc(
+                            landmark.x * canvas.width,
+                            landmark.y * canvas.height,
+                            isSpecialPoint ? 6 : 3,
+                            0,
+                            2 * Math.PI
+                        );
+                        ctx.fillStyle = isSpecialPoint ? (index === 0 ? '#ff3366' : '#33ff88') : '#ffffff';
+                        ctx.fill();
+                    });
+                });
+            } else {
+                gestureText.textContent = 'Show your hands to the camera';
+            }
+        }
+
+        async function initializeHandTracking() {
+            try {
+                loading.style.display = 'block';
+                gestureText.textContent = 'Starting camera...';
+
+                hands = new Hands({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                    }
+                });
+
+                hands.setOptions({
+                    maxNumHands: 2, // Updated to track two hands
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                hands.onResults(onResults);
+
+                camera = new Camera(video, {
+                    onFrame: async () => {
+                        await hands.send({image: video});
+                    },
+                    width: 1280,
+                    height: 720
+                });
+
+                await camera.start();
+                isTracking = true;
+                loading.style.display = 'none';
+                gestureText.textContent = 'Ready for gestures';
+            } catch (error) {
+                console.error('Error initializing hand tracking:', error);
+                loading.style.display = 'none';
+                gestureText.textContent = 'Error: Could not start camera';
+            }
+        }
+
+        // Initialize physics world and objects
+        function initializePhysicsWorld() {
+            // Create ground - thicker for better containment
+            const ground = Bodies.rectangle(
+                window.innerWidth / 2,
+                window.innerHeight + 25, // Moved slightly below viewport
+                window.innerWidth * 1.5, // Wider than viewport
+                50,  // Thicker ground
+                { 
+                    isStatic: true,
+                    render: { visible: true }
+                }
+            );
+
+            // Create walls - taller and with better positioning
+            const wallOptions = {
+                isStatic: true,
+                render: { visible: true },
+                density: 1,
+                friction: 0.6,      // Natural wall friction
+                restitution: 0.1    // Less bouncy walls
+            };
+
+            // Left wall - extends above viewport
+            const leftWall = Bodies.rectangle(
+                -25, // Slightly outside viewport
+                window.innerHeight / 2,
+                50, // Thicker wall
+                window.innerHeight * 2, // Taller than viewport
+                wallOptions
+            );
+
+            // Right wall - extends above viewport
+            const rightWall = Bodies.rectangle(
+                window.innerWidth + 25, // Slightly outside viewport
+                window.innerHeight / 2,
+                50, // Thicker wall
+                window.innerHeight * 2, // Taller than viewport
+                wallOptions
+            );
+
+            // Add all boundaries to world
+            World.add(engine.world, [ground, leftWall, rightWall]);
+
+            // Add collision filtering to prevent blocks from passing through boundaries
+            engine.world.gravity.scale = 0.001; // Maintain gentle gravity
+            engine.world.bounds = {
+                min: { x: -100, y: -1000 }, // Allow some space above viewport
+                max: { x: window.innerWidth + 100, y: window.innerHeight + 100 }
+            };
+        }
+
+        function createPhysicsObject(color, index) {
+            const size = 100;
+            const x = Math.random() * (window.innerWidth - size * 2) + size;
+            const y = Math.random() * (window.innerHeight / 2) + size;
+
+            // Create physics body with more natural wooden block properties
+            const body = Bodies.rectangle(x, y, size, size, {
+                restitution: 0.1,        // Less bouncy like wood
+                friction: 0.8,           // More friction like wood
+                density: 0.0015,         // Weight similar to wooden blocks
+                chamfer: { radius: 4 },  // Slight edge rounding
+                frictionAir: 0.001,      // Natural air resistance
+                frictionStatic: 0.8,     // Higher static friction for stability
+                collisionFilter: {
+                    category: 0x0002,
+                    mask: 0xFFFF
+                }
+            });
+
+            // Create visual element
+            const element = document.createElement('div');
+            element.className = 'physics-object';
+            element.style.width = `${size}px`;
+            element.style.height = `${size}px`;
+            element.style.backgroundColor = color;
+            element.textContent = LETTERS[index];
+            element.style.display = 'flex';
+            element.style.alignItems = 'center';
+            element.style.justifyContent = 'center';
+            element.style.color = '#ffffff';
+            element.style.fontWeight = 'bold';
+            element.style.fontSize = '2.5rem';
+            document.body.appendChild(element);
+
+            physicsObjects.set(body, element);
+            World.add(engine.world, body);
+            return body;
+        }
+
+        // Modified stabilization for more natural behavior
+        function stabilizeRotations() {
+            physicsObjects.forEach((element, body) => {
+                const angle = body.angle % (Math.PI * 2);
+                const normalizedAngle = angle < 0 ? angle + Math.PI * 2 : angle;
+                
+                // Smaller threshold for more precise orientation
+                const threshold = Math.PI / 24; // 7.5 degrees
+                const quarterTurns = [0, Math.PI/2, Math.PI, Math.PI * 3/2];
+                
+                for (let target of quarterTurns) {
+                    const diff = Math.abs(normalizedAngle - target);
+                    if (diff < threshold || Math.abs(diff - Math.PI * 2) < threshold) {
+                        // Only stabilize if moving slowly
+                        if (Math.abs(body.angularVelocity) < 0.05 && 
+                            Math.abs(body.velocity.x) < 0.5 && 
+                            Math.abs(body.velocity.y) < 0.5) {
+                            // Very gentle correction
+                            const correction = (target - normalizedAngle) * 0.05;
+                            Body.setAngle(body, normalizedAngle + correction);
+                            Body.setAngularVelocity(body, body.angularVelocity * 0.9);
+                        }
+                        break;
+                    }
+                }
+            });
+        }
+
+        // Add a function to check and reset blocks that somehow escape
+        function checkBlockBounds() {
+            physicsObjects.forEach((element, body) => {
+                // If block goes too far to the sides or bottom, reset its position
+                if (body.position.x < -50 || 
+                    body.position.x > window.innerWidth + 50 || 
+                    body.position.y > window.innerHeight + 100) {
+                    
+                    Body.setPosition(body, {
+                        x: Math.random() * (window.innerWidth - 200) + 100,
+                        y: 100
+                    });
+                    Body.setVelocity(body, { x: 0, y: 0 });
+                    Body.setAngularVelocity(body, 0);
+                }
+            });
+        }
+
+        // Update visual elements based on physics
+        function updateVisuals() {
+            physicsObjects.forEach((element, body) => {
+                const pos = body.position;
+                const angle = body.angle;
+                element.style.transform = `translate(${pos.x - element.offsetWidth/2}px, ${pos.y - element.offsetHeight/2}px) rotate(${angle}rad)`;
+            });
+        }
+
+        // Animation loop
+        function animate() {
+            Engine.update(engine);
+            stabilizeRotations();
+            updateVisuals();
+            checkBlockBounds();
+            requestAnimationFrame(animate);
+        }
+
+        // Event Listeners
+        window.addEventListener('load', () => {
+            initializeCanvas();
+            initializeHandTracking();
+            animate();
+        });
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            video.width = window.innerWidth;
+            video.height = window.innerHeight;
+            // Reinitialize physics world on resize
+            World.clear(engine.world);
+            initializePhysicsWorld();
+        });
+    </script>
+</body>
+</html> 
